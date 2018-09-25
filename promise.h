@@ -1,146 +1,130 @@
 #ifndef PROMISE_H
 #define PROMISE_H
 
-#include <functional>
+#include "application.h"
 #include <condition_variable>
-#include <experimental/optional>
-#include "threadpool.h"
+#include <optional>
+#include <functional>
+#include <tuple>
 
 template<class T>
-class PromiseTask {
-    std::function<T()> _target;
-    std::function<void (T&)> _then;
-    std::atomic_bool _completed;
-    std::mutex _mutex, _thenMutex;
+class PromiseTask : Task {
+    using Thennable = std::function<void(T)>;
 
-    T _result;
+    Thennable _then;
+    TaskBindingPolicy _thenBindingPolicy;
+    const int _thenBoundLooperId;
+    std::mutex _thenMutex;
+    //T _result;
+    uint8_t _resultBlob[sizeof(T)];
+
 public:
-    PromiseTask(std::function<T()> target)
-        : _target{target}, _then{nullptr}, _completed{false}
-    {}
-
-    PromiseTask(PromiseTask<T>&& other) {
-        swap(other);
+    template<class Callable, class... Args>
+    PromiseTask(Callable&& callback, Args&&... args)
+        : Task{createExecutor(std::forward<Callable>(callback), std::forward<Args>(args)...)},
+          _thenBoundLooperId {-1}, _thenBindingPolicy {TaskBindingPolicy::UNBOUND}, _then {nullptr} {
+        std::cerr << "PromiseTask(Callable&& callback, Args&&... args)\n";
     }
 
-    PromiseTask<T>& operator=(PromiseTask<T>&& other) {
-        swap(other);
-        return *this;
+    template<class Callable, class... Args>
+    PromiseTask(Callable&& callback, int looperId, TaskBindingPolicy policy, int thenLooperId,
+                   TaskBindingPolicy thenPolicy, Args&&... args)
+        : Task{createExecutor(std::forward<Callable>(callback), std::forward<Args>(args)...), looperId, policy},
+          _thenBoundLooperId {thenLooperId}, _thenBindingPolicy {thenPolicy}, _then {nullptr} {
+        std::cerr << "PromiseTask(Callable&& callback, int looperId, TaskBindingPolicy policy, int thenLooperId, TaskBindingPolicy thenPolicy, Args&&... args)\n";
     }
 
-    PromiseTask(const PromiseTask<T>&) = delete;
-    PromiseTask<T>& operator=(const PromiseTask<T>& other) = delete;
+    void setThen(Thennable then) {
+        std::lock_guard<std::mutex> lock(_thenMutex);
+        _then = then;
+        if (isReady()) {
+            Application::getInstance()->addTask(new Task([result = std::move(*(T*)(_resultBlob)), then = _then]() { then(result); },
+                                                         _thenBoundLooperId, _thenBindingPolicy));
+        }
+    }
 
-    ~PromiseTask() {
-        //std::cerr << ">>Destructed\n";
+    virtual ~PromiseTask() {
+        std::cerr << "~PromiseTask()\n";
+    }
+
+    T get() const {
+        while(this->getState() != TaskState::FINISHED) {
+            std::this_thread::yield();
+        }
+        return *(T*)(_resultBlob);
+    }
+
+    std::optional<T> tryGet() const {
+        if (this->getState() == TaskState::FINISHED)
+            return {*(T*)(_resultBlob)};
+        return std::nullopt;
     }
 
     bool isReady() {
-        return _completed;
+        return this->getState() == TaskState::FINISHED;
     }
 
-    void setThen(std::function<void (T&)> then) {
-        std::lock_guard<std::mutex> lock(_thenMutex);
-        _then = then;
-        if(_completed)
-            _then(_result);
+private:
+    template<class Callable, class... Args>
+    Executor createExecutor(Callable&& callback, Args&&... args) {
+        auto argsTuple = std::make_tuple<Args...>(std::forward<Args>(args)...);
+        return [this, callback = std::forward<Callable>(callback), args = std::move(argsTuple)]() mutable {
+            execInternal(callback, std::forward<decltype (args)>(args));
+        };
     }
 
-    void start() {
-        _mutex.lock();
-        _result = _target();
-        _completed = true;
-        _mutex.unlock();
+    template<class Callable, class... Args>
+    void execInternal(Callable&& callback, std::tuple<Args...>&& args) {
+        *(T*)(_resultBlob) = std::apply(callback, std::forward<decltype (args)>(args));
 
         _thenMutex.lock();
-        if(_then)
-            _then(_result);
+        if (_then) {
+            Application::getInstance()->addTask(new Task([result = std::move(*(T*)(_resultBlob)), then = _then]() mutable {
+                then(std::forward<T>(result));
+            }, _thenBoundLooperId, _thenBindingPolicy));
+        }
         _thenMutex.unlock();
     }
-
-    std::experimental::optional<T> tryGet() {
-        if(_completed)
-            return {_result};
-        return std::experimental::nullopt;
-    }
-
-    T get() {
-        // TODO: Remaster
-        while(!_completed)
-            std::this_thread::yield();
-        return _result;
-    }
-
-    void swap(PromiseTask<T> &other) {
-        std::lock(_mutex, other._mutex, _thenMutex, other._thenMutex);
-        std::lock_guard<std::mutex> lock1(_mutex, std::adopt_lock);
-        std::lock_guard<std::mutex> lock2(other._mutex, std::adopt_lock);
-        std::lock_guard<std::mutex> lock3(_thenMutex, std::adopt_lock);
-        std::lock_guard<std::mutex> lock4(other._thenMutex, std::adopt_lock);
-
-        _completed.exchange(other._isReady);
-        std::swap(_target, other._target);
-        std::swap(_then, other._then);
-        std::swap(_result, other._result);
-    }
-
 };
 
 template<class T>
 class Promise {
-    std::shared_ptr<PromiseTask<T>> _task;
+    std::shared_ptr<Task> _task;
+
 public:
-    Promise()
-    {}
-
-    Promise(std::function<T()> target)
-    {
-        auto pool = getMainThreadPool();
-        if(pool == nullptr) {
-            std::clog << "Executing promise sequentally\n";
-            _task = std::shared_ptr<PromiseTask<T>>(new PromiseTask<T>(target));
-            _task->start();
-        }
-        else {
-            std::clog << "Executing promise in parallel\n";
-            _task = std::shared_ptr<PromiseTask<T>>(new PromiseTask<T>(target));
-            pool->addTask([t=_task](){
-                t->start();
-            });
-        }
+    template<class Callable, class... Args>
+    Promise(Callable&& target, Args&&... args) {
+        auto app = Application::getInstance();
+        _task = std::shared_ptr<Task>((Task*)new PromiseTask<T> {
+                                          std::forward<Callable>(target),
+                                          std::forward<Args>(args)...
+                                      });
+        app->addTask(_task);
     }
 
-    Promise(Promise<T>&& other) {
-        swap(other);
-    }
-
-    Promise<T>& operator=(Promise<T>&& other) {
-        swap(other);
-        return *this;
-    }
-
-    Promise(const Promise<T>&) = delete;
-    Promise<T>& operator=(const Promise<T>& other) = delete;
-
-    void then(std::function<void(T&)> thenCb) {
-        _task->setThen(thenCb);
+    void then(std::function<void(T)> thenCb) {
+        promise_cast()->setThen(thenCb);
     }
 
     bool isReady() {
-        return _task->isReady();
+        return promise_cast()->isReady();
     }
 
     T result() {
-        return _task->get();
+        return promise_cast()->get();
     }
 
-    std::experimental::optional<T> tryGet() {
-        return _task->tryGet();
+    std::optional<T> tryGet() {
+        return promise_cast()->tryGet();
     }
 
 private:
     void swap(Promise<T>& other) {
         std::swap(_task, other._task);
+    }
+
+    PromiseTask<T>* promise_cast() {
+        return ((PromiseTask<T>*)_task.get());
     }
 };
 

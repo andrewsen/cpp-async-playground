@@ -9,12 +9,15 @@ class Application {
     int _status;
 
     Application();
+
 public:
     static std::shared_ptr<Application> create();
     static std::shared_ptr<Application> getInstance();
     void exit(int status);
     int exec();
     void addTask(std::function<void()> fun);
+    void addTask(Task *task);
+    void addTask(const std::shared_ptr<Task> &task);
 };
 
 #endif // APPLICATION_H
