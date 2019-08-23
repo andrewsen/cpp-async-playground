@@ -15,7 +15,7 @@ ThreadPool::ThreadPool(size_t count, bool addMainLooper)
 
     _loopers = new std::shared_ptr<Looper>[_count];
     for (int i = 0; i < _count; ++i) {
-        _loopers[i] = std::shared_ptr<Looper>(new Looper(i, &_taskQueue));
+        _loopers[i] = std::shared_ptr<Looper>(new Looper(i, &_taskQueue, _watcher, this));
     }
 }
 
@@ -24,30 +24,36 @@ ThreadPool::~ThreadPool() {
         stop();
 }
 
-void ThreadPool::addTask(Task *task) {
-    addTask(std::shared_ptr<Task>(task));
+std::shared_ptr<Task> ThreadPool::addTask(Task *task) {
+    return addTask(std::shared_ptr<Task>(task));
 }
 
-void ThreadPool::addTask(const std::shared_ptr<Task> &task) {
-    switch (task->bindingPolicy()) {
+std::shared_ptr<Task> ThreadPool::addTask(const std::shared_ptr<Task> &task) {
+    auto policy = task->getPolicy();
+    task->setState(TaskState::PENDING);
+    switch (policy.policy) {
         case TaskBindingPolicy::UNBOUND:
             _taskQueue.push(task);
+            _watcher.notifyOne();
             break;
         case TaskBindingPolicy::BOUND:
-            _loopers[task->boundLooperId()]->pushBack(task);
+            _loopers[policy.boundLooper]->pushBack(task);
+            _watcher.notifyAll();
             break;
         case TaskBindingPolicy::UNBOUND_EXCEPT: {
-            auto min = _loopers[0]->getQueueSize();
-            auto desired = _loopers[0];
-            for (int i = 1; i < _count; ++i) {
-                if (_loopers[i]->getQueueSize() < min) {
-                    desired = _loopers[i];
+            size_t min = SIZE_MAX; //_loopers[0]->getQueueSize();
+            std::shared_ptr<Looper>* desired = nullptr;
+            for (size_t i = 0; i < _count; ++i) {
+                if (_loopers[i]->getQueueSize() < min && i != policy.boundLooper) {
+                    desired = &_loopers[i];
                     min = _loopers[i]->getQueueSize();
                 }
             }
-            desired->pushBack(task);
+            (*desired)->pushBack(task);
+            _watcher.notifyAll();
         } break;
     }
+    return task;
 }
 
 std::shared_ptr<Looper> ThreadPool::getThisLooper() {
@@ -72,17 +78,19 @@ void ThreadPool::stop() {
         return;
     _isStopped = true;
 
+    for (int i = 0; i < _count; ++i) {
+        _loopers[i]->stop();
+    }
+
+    _watcher.notifyAll();
+
+    auto threads = _count;
     if (_useMainLooper) {
-        for (int i = 1; i < _count; ++i) {
-            _loopers[i]->stop();
-            _pool[i - 1].join();
-        }
-        _loopers[0]->stop();
-    } else {
-        for (int i = 0; i < _count; ++i) {
-            _loopers[i]->stop();
-            _pool[i].join();
-        }
+        --threads;
+    }
+
+    for (int i = 0; i < threads; ++i) {
+        _pool[i].join();
     }
 
     delete[] _loopers;
@@ -92,7 +100,16 @@ void ThreadPool::stop() {
 void ThreadPool::loop(int id) {
     // std::clog << "Started Looper #" << id << std::endl;
     _thisLooper = _loopers[id];
-    _thisLooper->loop();
+    bool reload = false;
+    do {
+        try {
+            _thisLooper->loop();
+            reload = false;
+        } catch (...) {
+            std::cerr << "Exception was risen in looper #" << id << std::endl;
+            reload = true;
+        }
+    } while(reload);
     // std::clog << "Stopped Looper #" << id << std::endl;
 }
 

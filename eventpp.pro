@@ -10,13 +10,15 @@ SOURCES += main.cpp \
     threadpool.cpp \
     promise.cpp \
     application.cpp \
-    task.cpp
+    task.cpp \
+    event.cpp
 
 HEADERS += \
     looper.h \
     threadpool.h \
     promise.h \
     application.h \
-    task.h
+    task.h \
+    event.h
 
 LIBS += -lpthread

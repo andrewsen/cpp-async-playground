@@ -5,11 +5,12 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <condition_variable>
 
 #include "looper.h"
 #include "task.h"
 
-class ThreadPool {
+class ThreadPool : ThreadPoolBase {
     size_t _count{0};
     bool _useMainLooper{false};
     std::thread *_pool{nullptr};
@@ -17,14 +18,15 @@ class ThreadPool {
     std::atomic_bool _isStopped;
     TaskQueue _taskQueue;
     std::mutex _mutex;
+    QueueWatcher _watcher;
     static thread_local std::shared_ptr<Looper> _thisLooper;
 
 public:
     ThreadPool(size_t count = 1, bool addThisThread = false);
-    ~ThreadPool();
+    virtual ~ThreadPool() override;
 
-    void addTask(Task *task);
-    void addTask(const std::shared_ptr<Task> &task);
+    virtual std::shared_ptr<Task> addTask(Task *task) override;
+    virtual std::shared_ptr<Task> addTask(const std::shared_ptr<Task> &task) override;
     std::shared_ptr<Looper> getThisLooper();
 
     void start();

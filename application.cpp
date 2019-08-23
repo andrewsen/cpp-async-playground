@@ -10,7 +10,10 @@ Application::Application() : _status{0} {
         throw std::runtime_error("Application already created");
     }
 
-    _pool = std::shared_ptr<ThreadPool>(new ThreadPool(get_nprocs() - 1, true));
+    size_t looperCount = get_nprocs();
+
+    _pool = std::shared_ptr<ThreadPool>(new ThreadPool(looperCount - 1, true));
+
     setMainThreadPool(_pool);
 }
 
@@ -29,23 +32,35 @@ int Application::exec() {
     return _status;
 }
 
-void Application::addTask(std::function<void()> fun) {
-    _pool->addTask(new Task(fun));
+TaskWatcher Application::addTask(std::function<void()> fun) {
+    return TaskWatcher(_pool->addTask(new Task(fun)));
 }
 
-void Application::addTask(Task *task) {
-    _pool->addTask(task);
+TaskWatcher Application::addTask(Task *task) {
+    return TaskWatcher(_pool->addTask(task));
 }
 
-void Application::addTask(const std::shared_ptr<Task> &task) {
-    _pool->addTask(task);
+TaskWatcher Application::addTask(const std::shared_ptr<Task> &task) {
+    return TaskWatcher(_pool->addTask(task));
 }
 
-void Application::exit(int status) {
+int Application::getThreadId() {
+    return getMainThreadPool()->getThisLooper()->getIndex();
+}
+
+void Application::rescheduleTask() {
+    _pool->getThisLooper()->rescheduleCurrentTask();
+}
+
+void Application::rescheduleTask(const TaskPolicy &policy) {
+    _pool->getThisLooper()->rescheduleCurrentTask(policy);
+}
+
+void Application::exit(int status) {    
+    _status = status;
     _pool->addTask(new Task([this]() {
                                 _pool->stop();
-                            }, 0, TaskBindingPolicy::BOUND
-                   ));
+                   }, TaskPolicy {TaskBindingPolicy::BOUND, 0}
+    ));
     //_pool->stop();
-    _status = status;
 }

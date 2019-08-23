@@ -1,10 +1,11 @@
 #include "looper.h"
 
-Looper::Looper(int index, TaskQueue *queue) : _isStopped{false}, _index{index}, _globalQueue{queue} {}
-
-Looper::Looper(Looper &&other) : _index{other._index} {
-    swap(other);
+ThreadPoolBase::~ThreadPoolBase() {
 }
+
+Looper::Looper(int index, TaskQueue *queue, QueueWatcher &watcher, ThreadPoolBase* pool)
+    : _isStopped{false}, _index{index}, _globalQueue{queue},
+      _watcher{watcher}, _pool {pool}, _reschedule {false}, _reschedulePolicy{std::nullopt} {}
 
 Looper::~Looper() {
     std::clog << "~Looper destructed\n";
@@ -31,32 +32,50 @@ void Looper::stop() noexcept {
 }
 
 void Looper::loop() {
-    std::shared_ptr<Task> task{nullptr};
+    std::shared_ptr<Task> task {nullptr};
     while (!_isStopped || !_localQueue.empty()) {
+        _watcher.wait([this](){ return !_localQueue.empty() || !_globalQueue->empty() || _isStopped; });
         while (!_localQueue.empty()) {
-            std::cerr << "Looper #" << _index << " took task from local queue\n";
             task = _localQueue.remove();
-            task->execute();
+            if (task->getState() == TaskState::PENDING) {
+                std::cerr << "Looper #" << _index << " took task #" << task->getId() << " from local queue\n";
+                task->execute();
+                if (_reschedule) {
+                    reschedule(task);
+                }
+            }
         }
         task = _globalQueue->remove();
         if (task) {
-            std::cerr << "Looper #" << _index << " took task from global queue\n";
-            task->execute();
+            if (task->getState() == TaskState::PENDING) {
+                std::cerr << "Looper #" << _index << " took task #" << task->getId() << " from local queue\n";
+                task->execute();
+                if (_reschedule) {
+                    reschedule(task);
+                }
+            }
         }
     }
 }
 
-bool Looper::isEmpty() {
-    return _localQueue.empty();
+void Looper::rescheduleCurrentTask() {
+    _reschedule = true;
+    _reschedulePolicy = std::nullopt;
 }
 
-void Looper::swap(Looper &other) {
-    std::lock(_mutex, other._mutex);
-    std::lock_guard<std::mutex> lock_a(_mutex, std::adopt_lock);
-    std::lock_guard<std::mutex> lock_b(other._mutex, std::adopt_lock);
+void Looper::rescheduleCurrentTask(const TaskPolicy &policy) {
+    _reschedule = true;
+    _reschedulePolicy = policy;
+}
 
-    // std::swap(_localQueue, other._localQueue);
-    std::swap(_globalQueue, other._globalQueue);
-    _isStopped.exchange(other._isStopped);
-    // std::swap(_isStopped, other._isStopped);
+void Looper::reschedule(const std::shared_ptr<Task> &task) {
+    _reschedule = false;
+    if(_reschedulePolicy)
+        task->setPolicy(*_reschedulePolicy);
+    std::cerr << "Task #" << task->getId() << " rescheduled\n";
+    _pool->addTask(task);
+}
+
+bool Looper::isEmpty() {
+    return _localQueue.empty();
 }

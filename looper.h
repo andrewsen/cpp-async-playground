@@ -7,6 +7,7 @@
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <condition_variable>
 
 #include "task.h"
 
@@ -102,26 +103,51 @@ public:
     }
 };
 
+struct QueueWatcher {
+    std::mutex mutex;
+    std::condition_variable cvar;
+
+    void notifyAll() {
+        std::unique_lock<std::mutex> lock(mutex);
+        cvar.notify_all();
+    }
+
+    void notifyOne() {
+        std::unique_lock<std::mutex> lock(mutex);
+        cvar.notify_one();
+    }
+
+    void wait(std::function<bool()> predicate) {
+        std::unique_lock<std::mutex> lock(mutex);
+        cvar.wait(lock, predicate);
+    }
+};
+
+class ThreadPoolBase {
+public:
+    virtual std::shared_ptr<Task> addTask(Task *task) = 0;
+    virtual std::shared_ptr<Task> addTask(const std::shared_ptr<Task> &task) = 0;
+
+    virtual ~ThreadPoolBase();
+};
+
 class Looper {
     mutable std::mutex _mutex;
     std::atomic_bool _isStopped;
     const int _index;
-    TaskQueue *_globalQueue;
+    TaskQueue* _globalQueue;
     TaskQueue _localQueue;
+    QueueWatcher& _watcher;
+    ThreadPoolBase* _pool;
+    bool _reschedule;
+    std::optional<TaskPolicy> _reschedulePolicy;
 
 public:
-    Looper(int index, TaskQueue *queue);
-
-    Looper(Looper &&other);
+    Looper(int index, TaskQueue *queue, QueueWatcher& watcher, ThreadPoolBase* pool);
 
     ~Looper();
 
-    Looper &operator=(Looper &&other) {
-        swap(other);
-        return *this;
-    }
-
-    void pushBack(const std::shared_ptr<Task> &task);
+    void pushBack(const std::shared_ptr<Task> &_currentTask);
 
     int getIndex() const noexcept;
     size_t getQueueSize() const noexcept;
@@ -130,12 +156,14 @@ public:
 
     void loop();
 
-    void moveTo(int count, std::shared_ptr<Looper> to);
+    void rescheduleCurrentTask();
+    void rescheduleCurrentTask(const TaskPolicy& policy);
 
 private:
     bool isEmpty();
-    void swap(Looper &other);
-    bool canExecuteThis(const std::shared_ptr<Task> &task) const;
+    bool canExecuteThis(const std::shared_ptr<Task> &_currentTask) const;
+    void wait();
+    void reschedule(const std::shared_ptr<Task> &_currentTask);
 };
 
 #endif // LOOPER_H
