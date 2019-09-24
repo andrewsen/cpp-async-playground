@@ -10,8 +10,10 @@ Application::Application() : _status{0} {
         throw std::runtime_error("Application already created");
     }
 
-    size_t looperCount = get_nprocs();
+    // Get number of cores in the system
+    size_t looperCount = static_cast<size_t>(get_nprocs());
 
+    // Create new thread pool that will create looperCount-1 looper threads and use current thread for looper also
     _pool = std::shared_ptr<ThreadPool>(new ThreadPool(looperCount - 1, true));
 
     setMainThreadPool(_pool);
@@ -28,6 +30,7 @@ std::shared_ptr<Application> Application::getInstance() {
 }
 
 int Application::exec() {
+    // Start thread pool
     _pool->start();
     return _status;
 }
@@ -58,9 +61,11 @@ void Application::rescheduleTask(const TaskPolicy &policy) {
 
 void Application::exit(int status) {    
     _status = status;
+
+    // Exit task is bound to 0 looper because thread pool can be correctly stopped only from first looper
+    // Maybe, need to fix it
     _pool->addTask(new Task([this]() {
                                 _pool->stop();
                    }, TaskPolicy {TaskBindingPolicy::BOUND, 0}
     ));
-    //_pool->stop();
 }

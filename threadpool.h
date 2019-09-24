@@ -9,6 +9,7 @@
 
 #include "looper.h"
 #include "task.h"
+#include "threadpoolbase.h"
 
 class ThreadPool : ThreadPoolBase {
     size_t _count{0};
@@ -26,17 +27,24 @@ public:
     virtual ~ThreadPool() override;
 
     virtual std::shared_ptr<Task> addTask(Task *task) override;
+
     virtual std::shared_ptr<Task> addTask(const std::shared_ptr<Task> &task) override;
-    std::shared_ptr<Looper> getThisLooper();
 
+    // Returns thread-local looper
+    std::shared_ptr<Looper> getThisLooper() const;
+
+    // Starts all loopers
     void start();
-    void stop();
 
+    // Signals all loopers to stop and joins their threads
+    void stop();
 private:
+    // Starts execution loop of specific looper
     void loop(int id);
 };
 
-void setMainThreadPool(const std::shared_ptr<ThreadPool> &pool);
+void setMainThreadPool(const std::shared_ptr<ThreadPool> &pool) noexcept;
+
 std::shared_ptr<ThreadPool> getMainThreadPool();
 
 #endif // THREADPOOL_H

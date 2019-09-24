@@ -5,11 +5,18 @@
 #include <functional>
 #include <memory>
 
-enum class TaskBindingPolicy { UNBOUND, UNBOUND_EXCEPT, BOUND };
+enum class TaskBindingPolicy {
+    // Can be executed in any thread (looper)
+    UNBOUND,
+
+    // Can be executed in any thread (looper) except specified one
+    UNBOUND_EXCEPT,
+
+    // Should be executed only in a specific thread
+    BOUND
+};
 
 enum class TaskState { PENDING, EXECUTING, FINISHED, CANCELED };
-
-//typedef std::optional<int> LooperPolicyBinding;
 
 struct TaskPolicy {
     TaskBindingPolicy policy;
@@ -38,71 +45,51 @@ private:
     const Executor _executor;
     std::atomic<TaskState> _state;
 
+    // Provides unique task id
     static std::atomic_size_t _idCounter;
 public:
-    Task();
+    Task() noexcept;
 
-    Task(Executor executor);
+    Task(Executor executor) noexcept;
 
-    Task(Executor executor, TaskPolicy policy);
+    Task(Executor executor, TaskPolicy policy) noexcept;
 
-    virtual ~Task();
+    virtual ~Task() = default;
 
     Task(const Task &) = delete;
     Task &operator=(const Task &) = delete;
 
-    TaskPolicy getPolicy() const;
-    void setPolicy(const TaskPolicy &policy);
+    TaskPolicy getPolicy() const noexcept;
+    void setPolicy(const TaskPolicy &policy) noexcept;
 
-    TaskState getState() const;
-    void setState(TaskState state);
+    TaskState getState() const noexcept;
+    void setState(TaskState state) noexcept;
 
-    size_t getId() const;
+    size_t getId() const noexcept;
 
-    void execute() {
-        _state = TaskState::EXECUTING;
-        if(_executor)
-            _executor();
-        _state = TaskState::FINISHED;
-    }
+    void execute();
 
-    void operator()() {
-        execute();
-    }
-
-    // template <class Ret, class... Args>
-    // void setFunction(std::function<Ret(Args...)> func);
+    void operator()();
 };
 
+
+// Safe wrapper above the task
 class TaskWatcher {
 private:
     const std::shared_ptr<Task> _task;
 
 public:
-    TaskWatcher(const std::shared_ptr<Task> task)
-        : _task{task}
-    {}
+    TaskWatcher(const std::shared_ptr<Task> task) noexcept;
 
-    auto getState() const {
-        return _task->getState();
-    }
+    auto getState() const noexcept;
 
-    auto getId() const {
-        return _task->getId();
-    }
+    auto getId() const noexcept;
 
-    auto getPolicy() const {
-        return _task->getPolicy();
-    }
+    auto getPolicy() const noexcept;
 
-    bool isFinished() const {
-        auto state = _task->getState();
-        return state == TaskState::FINISHED || state == TaskState::CANCELED;
-    }
+    bool isFinished() const noexcept;
 
-    void cancel() {
-        _task->setState(TaskState::CANCELED);
-    }
+    void cancel() noexcept;
 };
 
 #endif // TASK_H

@@ -6,90 +6,21 @@
 
 #include "application.h"
 #include "promise.h"
+#include "event.h"
 
-using namespace std;
+using std::chrono_literals::operator""ms;
+using std::chrono_literals::operator""s;
 
-template <class... Args> class Event {
-    typedef void (*Callback)(Args...);
-
-protected:
-    mutable std::mutex _mutex;
-    std::list<Callback> _handlers;
-
-public:
-    Event() {}
-
-    Event(const Event &other) {
-        std::lock_guard<std::mutex> lock(other._mutex);
-        _handlers = other._handlers;
-    }
-
-    virtual ~Event() {}
-
-    Event &operator=(const Event &other) {
-        std::lock_guard<std::mutex> lock(_mutex);
-        _handlers.clear();
-
-        other._mutex.lock();
-        _handlers = other._handlers;
-        other._mutex.unlock();
-        return *this;
-    }
-
-    virtual void invoke(Args... args) {
-        std::lock_guard<std::mutex> locker(_mutex);
-        for (auto handler : _handlers)
-            handler(args...);
-    }
-
-    void operator+=(Callback callback) {
-        std::lock_guard<std::mutex> locker(_mutex);
-        _handlers.push_back(callback);
-    }
-
-    void operator-=(Callback callback) {
-        std::lock_guard<std::mutex> locker(_mutex);
-        _handlers.remove(callback);
-    }
-
-    void operator()(Args... args) {
-        invoke(args...);
-    }
-
-protected:
-    void swap(Event &other) {
-        std::lock(_mutex, other._mutex);
-        std::lock_guard<std::mutex> lock_a(_mutex, std::adopt_lock);
-        std::lock_guard<std::mutex> lock_b(other._mutex, std::adopt_lock);
-
-        std::swap(_handlers, other._handlers);
-    }
-};
-
-template <class... Args> class AsyncEvent : public Event<Args...> {
-public:
-    virtual void invoke(Args... args) override {
-        auto pool = getMainThreadPool();
-
-        std::lock_guard<std::mutex> locker(this->_mutex);
-        for (auto handler : this->_handlers) {
-            // pool->addTask([handler, args...]() {
-            //    handler(args...);
-            //});
-        }
-    }
-};
-
-template <class T> class List {
+template <class T>
+class DummyList {
 private:
-    vector<T> vec;
+    std::vector<T> vec;
 
 public:
-    // typedef bool(*SelectorCb)(const T& elem);
-    typedef std::function<bool(const T &elem)> SelectorCb;
+    using Selector = std::function<bool(const T &elem)>;
 
-    AsyncEvent<T> addedEvent;
-    AsyncEvent<T> removedEvent;
+    Event<DummyList, T> addedEvent;
+    Event<DummyList, T> removedEvent;
 
     void pushBack(const T &val) {
         vec.push_back(val);
@@ -118,9 +49,9 @@ public:
         return vec.size();
     }
 
-    Promise<List<T>> select(SelectorCb selector) {
-        return Promise<List<T>>([this, selector]() {
-            List<T> result;
+    Promise<DummyList<T>> select(Selector selector) {
+        return Promise<DummyList<T>>([this, selector]() {
+            DummyList<T> result;
             for (auto &elem : vec) {
                 if (selector(elem))
                     result.pushBack(elem);
@@ -132,13 +63,13 @@ public:
 
 Promise<int> calc(int a, int b) {
     return Promise<int>([](int a, int b) {
-        // cout << "a, b: " << a << ", " << b << endl;
         std::this_thread::sleep_for(100ms);
         return a * b;
     }, a, b);
 }
 
-template <class T> void pfor(T start, T end, std::function<void(T)> action) {
+template <class T>
+void pfor(T start, T end, std::function<void(T)> action) {
     auto inst = Application::getInstance();
     for (T i = start; i < end; ++i) {
         std::this_thread::sleep_for(40ms);
@@ -152,33 +83,33 @@ class Dummy {
 public:
     Dummy(int x)
         : x{x} {
-        cerr << "\tDummy(int x)\n";
+        std::cerr << "\tDummy(int x)\n";
     }
 
     Dummy(const Dummy& other)
         : x{other.x} {
-        cerr << "\tDummy(const Dummy& other)\n";
+        std::cerr << "\tDummy(const Dummy& other)\n";
     }
 
     Dummy(const Dummy&& other)
         : x{other.x} {
-        cerr << "\tDummy(const Dummy&& other)\n";
+        std::cerr << "\tDummy(const Dummy&& other)\n";
     }
 
     Dummy& operator=(const Dummy& other) {
         x = other.x;
-        cerr << "\tDummy& operator=(const Dummy& other)\n";
+        std::cerr << "\tDummy& operator=(const Dummy& other)\n";
         return *this;
     }
 
     Dummy& operator=(const Dummy&& other) {
         x = other.x;
-        cerr << "\tDummy& operator=(const Dummy&& other)\n";
+        std::cerr << "\tDummy& operator=(const Dummy&& other)\n";
         return *this;
     }
 
     ~Dummy() {
-        cerr << "\t~Dummy()\n";
+        std::cerr << "\t~Dummy()\n";
     }
 
     int getX(int y) const { return x + y; }
@@ -195,64 +126,42 @@ Dummy dummyFun(int x) {
     return Dummy {x};
 }
 
+void doWork(int x) {
+    std::this_thread::sleep_for(2s);
+    std::cerr << "Slept\n";
+}
+
 int main() {
     auto app = Application::create();
-    // ThreadPool pool{4};
-    // setMainThreadPool(&pool);
 
-    List<int> numbers;
-    numbers.addedEvent += [](int num) {
-        cout << "\tAdded number " << num << " | " << (getMainThreadPool()->getThisLooper()->getIndex()) << endl;
+    DummyList<int> numbers;
+    numbers.addedEvent += async_event [](int num) {
+        std::this_thread::sleep_for(10ms);
+        std::cerr << "\tAdded number " << num << " | " << (getMainThreadPool()->getThisLooper()->getIndex()) << std::endl;
     };
-    numbers.addedEvent += [](int num) {
-        // cout << "Negative " << -num << endl;
+    numbers.addedEvent += async_event [](int num) {
+        std::cerr << "Negative " << -num << std::endl;
     };
 
-    // for(int i = 0; i < 100; ++i)
-    //    numbers.pushBack(i);
+    for(int i = 0; i < 15; ++i) {
+        numbers.pushBack(i*i);
+    }
 
-    /*app->addTask([]() {
-        pfor<int>(0, 100, [](int i) {
-            // std::this_thread::sleep_for(100ms);
-            std::this_thread::sleep_for(10ms + std::chrono::milliseconds(10 + rand() % 300));
-            clog << i << " on " << getMainThreadPool()->getThisLooper()->getIndex() << endl;
-        });
-
-        cin.get();
-        clog << "Exiting\n";
-        Application::getInstance()->exit(0);
-    });*/
-
-    //calc(2, 4)
-    //    .then([](int res) {
-    //        cerr << "Result is: " << res << std::endl;
-    //    });
-
-    //Dummy d{42};
-    Promise<Dummy>(&dummyFun, 42)
-            .then([](Dummy d) {
-                std::cerr << "Dummy.x = " << d.getX(0) << std::endl;
-                Application::getInstance()->exit(0);
-            });
-
-    /*for(int i = 0; i < 15; ++i) {
-        //numbers.pushBack(i*i);
-        calc(i, (i/2) - (i/3))
-            .then([](int res){
-                cout << "Result: " << res << endl;
-            });
-    }*/
-    /*for(int i = 0; i < 10; ++i) {
-        numbers.select([i](const int& elem) -> bool {
-            std::this_thread::sleep_for(10ms);
-            return elem % (i+1) == 0;
-        }).then([i](List<int>& results) {
-            clog << "elem % " << i+1 << ": " << results.size();
-            //for(int i = 0; i < results.size(); ++i)
-            //    clog << results[i] << " ";
-            clog << endl;
-        });
-    }*/
+    app->add([]() {
+        static int count = 0;
+        std::cerr << "Task, count = " << count << "\n";
+        if(count < 10) {
+            std::this_thread::sleep_for(100ms);
+            App->rescheduleTask(TaskPolicy {
+                                   TaskBindingPolicy::UNBOUND_EXCEPT,
+                                   App->getThreadId()
+                               });
+        }
+        else {
+            App->exit(0);
+        }
+        ++count;
+    });
 
     return app->exec();
 }

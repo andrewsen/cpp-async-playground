@@ -6,9 +6,12 @@
 
 #include "application.h"
 
+// Cosplay of C# event mechanism
 template <class F, class... Args>
 class Event {
     using Callback = std::function<void(Args...)>;
+
+    // It's not good, but for now I can't find better way to give only to event-hosting class an access to some members
     friend F;
 
 protected:
@@ -23,6 +26,7 @@ public:
         _handlers = other._handlers;
     }
 
+
     virtual ~Event() {}
 
     Event &operator=(const Event &other) {
@@ -35,11 +39,13 @@ public:
         return *this;
     }
 
+    // C#-like addition operator (subscribes a callback to the event)
     void operator+=(Callback callback) {
         std::lock_guard<std::mutex> locker(_mutex);
         _handlers.push_back(callback);
     }
 
+    // C#-like remove operator (unsubscribes a callback from the event)
     void operator-=(Callback callback) {
         std::lock_guard<std::mutex> locker(_mutex);
         _handlers.remove(callback);
@@ -48,6 +54,8 @@ public:
 protected:
     virtual void invoke(Args... args) {
         std::lock_guard<std::mutex> locker(_mutex);
+
+        // Simply iterate all subscribed callbacks
         for (auto handler : _handlers)
             handler(args...);
     }
@@ -71,8 +79,7 @@ class AsyncEvent : public Event<F, Args...> {
 
 protected:
     virtual void invoke(Args... args) override {
-        auto pool = getMainThreadPool();
-
+        // Instead of invoking callbacks directly, add them to the application as tasks
         std::lock_guard<std::mutex> locker(this->_mutex);
         for (auto handler : this->_handlers) {
             Application::getInstance()->add(handler, args...);
@@ -80,9 +87,8 @@ protected:
     }
 
     void invokeSync(Args... args) {
-        for (auto handler : this->_handlers) {
-            handler(args...);
-        }
+        // Just pass to base sync invoke
+        Event<F, Args...>::invoke(args...);
     }
 };
 
